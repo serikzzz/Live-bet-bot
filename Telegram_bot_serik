@@ -1,0 +1,93 @@
+import logging
+import asyncio
+import aiohttp
+from aiogram import Bot, Dispatcher, types, F, Router
+from aiogram.types import Message
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# ====== НАСТРОЙКИ ======
+API_TOKEN = '8009395152:AAEST2A_uB4CfRrhTye70gMzNtEYytn7k08'
+API_FOOTBALL_KEY = 'da24f67898c878946c1050a0da4a464b'
+ADMIN_CHAT_ID = 376645599
+
+# ====== ИНИЦИАЛИЗАЦИЯ ======
+logging.basicConfig(level=logging.INFO)
+bot = Bot(
+    token=API_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+router = Router()
+dp.include_router(router)
+scheduler = AsyncIOScheduler()
+
+# ====== ПОЛУЧЕНИЕ МАТЧЕЙ ======
+async def fetch_live_matches():
+    url = "https://v3.football.api-sports.io/fixtures?live=all"
+    headers = {'x-apisports-key': API_FOOTBALL_KEY}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            data = await resp.json()
+            return data.get('response', [])
+
+# ====== АНАЛИЗ МАТЧЕЙ ======
+async def analyze_matches():
+    matches = await fetch_live_matches()
+    alerts = []
+
+    for match in matches:
+        teams = match['teams']
+        goals = match['goals']
+        stats = match.get('statistics', [])
+
+        home = teams['home']['name']
+        away = teams['away']['name']
+        score = f"{goals['home']} - {goals['away']}"
+        status_line = f"{home} vs {away} ({score})"
+
+        total_goals = goals['home'] + goals['away']
+        if total_goals >= 3:
+            alerts.append(f"[Голы] {status_line}")
+
+        for team_stats in stats:
+            team_name = team_stats['team']['name']
+            stats_dict = {item['type']: item['value'] for item in team_stats['statistics']}
+            if stats_dict.get('Dangerous Attacks', 0) and stats_dict['Dangerous Attacks'] >= 60:
+                alerts.append(f"[Опасные атаки] {team_name} > 60 — {status_line}")
+
+    return alerts
+
+# ====== АВТОСИГНАЛ ======
+async def send_auto_signals():
+    alerts = await analyze_matches()
+    if alerts:
+        for alert in alerts:
+            await bot.send_message(ADMIN_CHAT_ID, alert)
+
+# ====== КОМАНДЫ ======
+@router.message(F.text == "/start")
+async def start_command(message: Message):
+    await message.answer("Бот активен. Используй /check для анализа матчей.")
+
+@router.message(F.text == "/check")
+async def check_command(message: Message):
+    await message.answer("Анализирую текущие матчи...")
+    alerts = await analyze_matches()
+    if alerts:
+        for alert in alerts:
+            await message.answer(alert)
+    else:
+        await message.answer("Нет подходящих матчей.")
+
+# ====== ЗАПУСК ======
+async def main():
+    scheduler.add_job(send_auto_signals, "interval", minutes=5)
+    scheduler.start()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
